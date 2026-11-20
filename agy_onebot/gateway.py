@@ -21,6 +21,7 @@ from .roleplay_engine import RoleplayEngine
 from .session_manager import SessionManager
 from .ws_client import OneBotWebSocketTransport
 from .antigravity_driver import AntigravityDriver
+from .voice_helper import VoiceHelper
 
 logger = logging.getLogger("agy_onebot.gateway")
 
@@ -37,6 +38,7 @@ class BridgeGateway:
             roles_dir=self.config.roleplay.roles_dir or None
         )
         self.roleplay.default_role = self.config.roleplay.default_role
+        self.voice = VoiceHelper()
 
         self.sessions = SessionManager(
             max_turns_per_session=self.config.max_history_turns
@@ -157,6 +159,7 @@ class BridgeGateway:
                 system_instructions=sys_instructions,
                 image_bytes=img_bytes,
                 image_mime=img_mime,
+                conversation_id=msg.session_id,
             )
         except Exception as e:
             logger.error(f"Antigravity driver error: {e}")
@@ -168,10 +171,19 @@ class BridgeGateway:
         session.add_turn("user", msg.sender_display_name, text)
         session.add_turn("assistant", active_role, clean_response)
 
+        want_voice = ("语音" in text) or any(kw in text for kw in ("说句话", "读一下", "念一下", "听听你的声音", "声音"))
+
         for chunk in chunks:
             await self._send_reply(msg, chunk)
             if len(chunks) > 1:
                 await asyncio.sleep(0.3)
+
+        if want_voice and clean_response:
+            logger.info("Voice keyword detected, synthesizing audio record...")
+            voice_uri = await asyncio.to_thread(self.voice.synthesize, clean_response)
+            if voice_uri:
+                record_cq = self.voice.format_record_cq(voice_uri)
+                await self._send_reply(msg, record_cq)
 
     async def _handle_builtin_command(self, msg: InboundMessage, cmd_text: str) -> bool:
         """Handle commands like /role, /roles, /reset, /status."""
@@ -200,6 +212,16 @@ class BridgeGateway:
                 await self._send_reply(msg, f"角色已成功切换为：【{target}】")
             else:
                 await self._send_reply(msg, f"未找到角色「{target}」，输入 /roles 查看所有可用角色。")
+            return True
+
+        if cmd in ("tts", "voice") and len(parts) > 1:
+            spoken_text = " ".join(parts[1:])
+            voice_uri = self.voice.synthesize(spoken_text)
+            if voice_uri:
+                record_cq = self.voice.format_record_cq(voice_uri)
+                await self._send_reply(msg, record_cq)
+            else:
+                await self._send_reply(msg, "语音合成失败，请检查语音配置。")
             return True
 
         if cmd in ("status", "info"):
@@ -234,6 +256,7 @@ class BridgeGateway:
         if is_milky:
             action, params = onebot_to_milky_api(action, params)
 
+        logger.info(f"Sending reply to {original_msg.session_id} via {action} (length: {len(text)})...")
         try:
             await self.transport.call_action(action, params)
         except Exception as e:

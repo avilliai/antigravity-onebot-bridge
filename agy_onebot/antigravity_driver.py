@@ -13,6 +13,7 @@ import logging
 import os
 import shutil
 import subprocess
+from pathlib import Path
 from typing import AsyncGenerator, Dict, List, Optional
 
 logger = logging.getLogger("agy_onebot.driver")
@@ -42,6 +43,7 @@ class AntigravityDriver:
         self.api_key = api_key or os.getenv("GEMINI_API_KEY", "") or os.getenv("ANTIGRAVITY_API_KEY", "")
         self.model_name = model_name or "gemini-2.5-pro"
         self.timeout = timeout
+        self._active_sessions = set()
 
         if mode == "auto":
             if shutil.which(cli_command):
@@ -80,42 +82,75 @@ class AntigravityDriver:
     ) -> str:
         """Invoke Antigravity CLI (agy.exe) non-interactively via subprocess.
 
-        Uses:
-          agy -p <prompt> --dangerously-skip-permissions [--conversation <id>]
+        Maintains multi-turn context using --continue for active sessions.
         """
         full_prompt = prompt
         if system_instructions:
             full_prompt = f"[System Instructions: {system_instructions}]\n\n{prompt}"
 
-        cmd = [
-            self.cli_command,
-            "-p", full_prompt,
-            "--dangerously-skip-permissions",
-            "--output-format", "text"
-        ]
-        if conversation_id:
-            cmd.extend(["--conversation", conversation_id])
+        is_subsequent = bool(conversation_id and conversation_id in self._active_sessions)
+        work_dir = str(Path(__file__).resolve().parent.parent)
 
-        try:
-            logger.info(f"Executing agy CLI command: {self.cli_command} -p ...")
+        async def _run_command(use_continue: bool, use_new_project: bool = False) -> tuple[int, str, str]:
+            cmd = [
+                self.cli_command,
+                "-p", full_prompt,
+                "--dangerously-skip-permissions",
+                "--output-format", "text"
+            ]
+            if self.model_name:
+                cmd.extend(["--model", self.model_name])
+            if use_continue:
+                cmd.append("--continue")
+            elif use_new_project:
+                cmd.append("--new-project")
+
+            logger.info(f"Executing agy CLI in {work_dir}: {' '.join(cmd[:6])}...")
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                cwd=work_dir,
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=self.timeout)
-            out_str = stdout.decode("utf-8", errors="replace").strip()
-            if proc.returncode != 0:
-                err_str = stderr.decode("utf-8", errors="replace").strip()
-                logger.warning(f"CLI returned code {proc.returncode}: {err_str}")
-                if not out_str:
-                    # Fallback to direct API if CLI fails or lacks login session
+            out_s = stdout.decode("utf-8", errors="replace").strip()
+            err_s = stderr.decode("utf-8", errors="replace").strip()
+            return proc.returncode, out_s, err_s
+
+        try:
+            # First attempt: use --continue if already active, retry on transient network EOF
+            retcode, out_str, err_str = await _run_command(use_continue=is_subsequent)
+
+            # Retry on transient EOF / network hiccup
+            if retcode != 0 and ("EOF" in err_str or "connection" in err_str.lower() or "context deadline" in err_str.lower()):
+                logger.info(f"Transient network glitch ({err_str}), retrying agy turn in 1.5s...")
+                await asyncio.sleep(1.5)
+                retcode, out_str, err_str = await _run_command(use_continue=is_subsequent)
+
+            # If failed on subsequent turn, retry with fresh session
+            if retcode != 0 and is_subsequent:
+                logger.warning(f"CLI with --continue returned {retcode}: {err_str}. Retrying with fresh session...")
+                retcode, out_str, err_str = await _run_command(use_continue=False, use_new_project=True)
+
+            if retcode == 0 and out_str:
+                if conversation_id:
+                    self._active_sessions.add(conversation_id)
+                return out_str
+            else:
+                logger.warning(f"CLI returned code {retcode}: {err_str}")
+                if out_str:
+                    return out_str
+                # Fallback to direct API if API key configured, otherwise return friendly role response
+                if self.api_key:
                     logger.info("Falling back to API mode...")
                     return await self._chat_via_api(prompt, system_instructions, None)
-            return out_str
+                return "唔…信号好像刚刚卡了一下，你再说一遍试试？"
+
         except Exception as e:
-            logger.error(f"CLI execution failed: {e}. Falling back to API mode...")
-            return await self._chat_via_api(prompt, system_instructions, None)
+            logger.error(f"CLI execution failed: {e}.")
+            if self.api_key:
+                return await self._chat_via_api(prompt, system_instructions, None)
+            return "唔…网络好像晃了一下，刚才那句话没听清呢~"
 
     async def _chat_via_sdk(
         self,

@@ -143,6 +143,10 @@ class OneBotWebSocketTransport:
 
     async def call_action(self, action: str, params: Optional[Dict[str, Any]] = None, timeout: float = 20.0) -> Dict[str, Any]:
         """Invoke action via active WebSocket connection, falling back to HTTP API if no WS available."""
+        # For event-only WS endpoints (such as Milky /event), dispatch directly via HTTP API for zero latency
+        if "/event" in self.url and self.api_url:
+            return await self.call_http_api(action, params, timeout=timeout)
+
         if self._active_connections:
             echo_id = f"agy_{uuid.uuid4().hex[:12]}"
             req = {

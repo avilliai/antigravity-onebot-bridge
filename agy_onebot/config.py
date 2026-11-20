@@ -25,7 +25,7 @@ class OneBotConfig:
 class AntigravityConfig:
     mode: str = "auto"  # "sdk", "cli", "api", "auto"
     cli_command: str = "agy"
-    model_name: str = "gemini-2.5-pro"
+    model_name: str = "gemini-3.8-flash-low"
     api_key: str = ""
     api_base_url: str = ""
     timeout: float = 120.0
@@ -33,7 +33,7 @@ class AntigravityConfig:
 
 @dataclass
 class RoleplayConfig:
-    default_role: str = "default"
+    default_role: str = "yucca"
     roles_dir: str = ""
     enable_group_persona: bool = True
 

@@ -51,3 +51,11 @@ Thumbs.db
 
 # User specific config overrides
 config.yaml
+config.local.yaml
+local_config.json
+*.key
+*.env
+*.env.*
+*.wav
+*.mp3
+data/voice_cache/

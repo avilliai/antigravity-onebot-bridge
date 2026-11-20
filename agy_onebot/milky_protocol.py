@@ -16,6 +16,8 @@ import logging
 from typing import Any, Dict, List, Optional, Tuple
 from .event_parser import InboundMessage, MessageSegment
 
+import re
+
 logger = logging.getLogger("agy_onebot.milky")
 
 
@@ -127,8 +129,67 @@ def parse_milky_event(raw_event: Dict[str, Any], bot_qq: Optional[str] = None) -
 
 
 def text_to_milky_segments(text: str) -> List[Dict[str, Any]]:
-    """Convert text with optional embedded media into Milky segments."""
-    return [{"type": "text", "data": {"text": text}}]
+    """Convert text with optional embedded CQ codes into Milky segments."""
+    if not text:
+        return []
+
+    cq_pattern = re.compile(r"\[CQ:([a-zA-Z_]+)(?:,([^\]]*))?\]")
+    segments: List[Dict[str, Any]] = []
+    last_idx = 0
+
+    for match in cq_pattern.finditer(text):
+        start, end = match.span()
+        if start > last_idx:
+            prefix = text[last_idx:start]
+            if prefix:
+                segments.append({"type": "text", "data": {"text": prefix}})
+
+        cq_type = match.group(1).lower()
+        param_str = match.group(2) or ""
+        params: Dict[str, str] = {}
+        for part in param_str.split(","):
+            if "=" in part:
+                k, v = part.split("=", 1)
+                params[k.strip()] = v.strip()
+
+        if cq_type == "at":
+            qq = params.get("qq", "")
+            if qq in ("all", "0"):
+                segments.append({"type": "mention_all", "data": {}})
+            elif qq.isdigit():
+                segments.append({"type": "mention", "data": {"user_id": int(qq)}})
+        elif cq_type == "record":
+            file_path = params.get("file") or params.get("url", "")
+            if file_path:
+                if not (file_path.startswith("file://") or file_path.startswith("http://") or file_path.startswith("https://") or file_path.startswith("data:")):
+                    norm_path = file_path.replace("\\", "/")
+                    if not norm_path.startswith("/"):
+                        norm_path = "/" + norm_path
+                    file_path = f"file://{norm_path}"
+                segments.append({"type": "record", "data": {"uri": file_path}})
+        elif cq_type == "image":
+            file_path = params.get("file") or params.get("url", "")
+            if file_path:
+                if not (file_path.startswith("file://") or file_path.startswith("http://") or file_path.startswith("https://") or file_path.startswith("data:")):
+                    norm_path = file_path.replace("\\", "/")
+                    if not norm_path.startswith("/"):
+                        norm_path = "/" + norm_path
+                    file_path = f"file://{norm_path}"
+                segments.append({"type": "image", "data": {"uri": file_path}})
+        elif cq_type == "face":
+            face_id = params.get("id", "0")
+            segments.append({"type": "face", "data": {"face_id": str(face_id)}})
+        else:
+            segments.append({"type": cq_type, "data": params})
+
+        last_idx = end
+
+    if last_idx < len(text):
+        remaining = text[last_idx:]
+        if remaining:
+            segments.append({"type": "text", "data": {"text": remaining}})
+
+    return segments if segments else [{"type": "text", "data": {"text": text}}]
 
 
 def onebot_to_milky_api(action: str, params: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
