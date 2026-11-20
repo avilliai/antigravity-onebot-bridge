@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Configuration Loader for Antigravity-OneBot Bridge."""
+"""Configuration Loader for Antigravity-OneBot & Milky Bridge."""
 
 import os
 from dataclasses import dataclass, field
@@ -10,8 +10,11 @@ import yaml
 
 @dataclass
 class OneBotConfig:
+    protocol: str = "auto"  # "auto", "onebot", "milky"
     mode: str = "forward"  # "forward" or "reverse"
     ws_url: str = "ws://127.0.0.1:3001"
+    event_ws_url: str = ""  # Specific event ws URL (e.g. ws://127.0.0.1:3001/event for Milky)
+    api_url: str = "http://127.0.0.1:3000"  # HTTP API root (e.g. http://127.0.0.1:3001/api for Milky)
     reverse_host: str = "0.0.0.0"
     reverse_port: int = 8080
     access_token: str = ""
@@ -71,15 +74,18 @@ class BridgeConfig:
         with open(path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
 
-        ob_data = data.get("onebot", {})
+        ob_data = data.get("onebot", {}) or data.get("milky", {})
         ag_data = data.get("antigravity", {})
         rp_data = data.get("roleplay", {})
         tr_data = data.get("trigger", {})
 
         return cls(
             onebot=OneBotConfig(
+                protocol=ob_data.get("protocol", "auto"),
                 mode=ob_data.get("mode", "forward"),
                 ws_url=ob_data.get("ws_url", "ws://127.0.0.1:3001"),
+                event_ws_url=ob_data.get("event_ws_url", ""),
+                api_url=ob_data.get("api_url", "http://127.0.0.1:3000"),
                 reverse_host=ob_data.get("reverse_host", "0.0.0.0"),
                 reverse_port=int(ob_data.get("reverse_port", 8080)),
                 access_token=ob_data.get("access_token", ""),

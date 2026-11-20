@@ -1,17 +1,25 @@
 # Antigravity OneBot & Milky Bridge Configuration
 
 onebot:
-  # Connection mode: "forward" (bot connects to OneBot WS) or "reverse" (OneBot connects here)
+  # Protocol: "auto" (auto-detects OneBot / Milky), "onebot", or "milky"
+  protocol: "auto"
+  
+  # Connection mode: "forward" (bot connects to WS) or "reverse" (protocol endpoint connects here)
   mode: "forward"
   
   # Forward WS endpoint (NapCat / LLOneBot / Lagrange / Milky)
+  # For Milky: usually "ws://127.0.0.1:3001/event"
   ws_url: "ws://127.0.0.1:3001"
+  event_ws_url: ""
+  
+  # HTTP API root (e.g. "http://127.0.0.1:3001/api" for Milky, or "http://127.0.0.1:3000" for OneBot)
+  api_url: "http://127.0.0.1:3000"
   
   # Reverse WS listening address (used when mode is "reverse")
   reverse_host: "0.0.0.0"
   reverse_port: 8080
   
-  # Access token (leave empty if not configured in OneBot)
+  # Access token (leave empty if not configured in OneBot / Milky)
   access_token: ""
   
   # Bot QQ number (used to detect @bot mentions in groups)

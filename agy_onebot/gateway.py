@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""Antigravity-OneBot Bridge Gateway.
+"""Antigravity-OneBot & Milky Bridge Gateway.
 
-The central bidirectional service coordinating OneBot WebSocket communication,
+The central bidirectional service coordinating OneBot / Milky WebSocket communication,
 session routing, roleplay injection, and Antigravity response dispatching.
 """
 
@@ -16,6 +16,7 @@ from .event_parser import InboundMessage, parse_onebot_event
 from .forward_helper import format_forward_response
 from .md_to_plain import md_to_plain, split_for_qq
 from .media_processor import normalize_image_bytes
+from .milky_protocol import onebot_to_milky_api
 from .roleplay_engine import RoleplayEngine
 from .session_manager import SessionManager
 from .ws_client import OneBotWebSocketTransport
@@ -52,9 +53,11 @@ class BridgeGateway:
         )
 
         ob_cfg = self.config.onebot
+        ws_endpoint = ob_cfg.event_ws_url or ob_cfg.ws_url
         self.transport = OneBotWebSocketTransport(
             mode=ob_cfg.mode,
-            url=ob_cfg.ws_url,
+            url=ws_endpoint,
+            api_url=ob_cfg.api_url,
             host=ob_cfg.reverse_host,
             port=ob_cfg.reverse_port,
             access_token=ob_cfg.access_token,
@@ -63,7 +66,8 @@ class BridgeGateway:
 
     async def start(self) -> None:
         """Start the bridge gateway."""
-        logger.info("Initializing Antigravity-OneBot Bridge Gateway...")
+        proto = self.config.onebot.protocol.upper()
+        logger.info(f"Initializing Antigravity Bridge Gateway (Protocol: {proto})...")
         await self.transport.start()
 
     async def stop(self) -> None:
@@ -91,7 +95,6 @@ class BridgeGateway:
 
     def _should_trigger(self, msg: InboundMessage) -> bool:
         """Determine if bot should respond based on trigger rules."""
-        # Whitelist / Blacklist check for groups
         if msg.is_group:
             gid = str(msg.group_id)
             if self.config.trigger.group_blacklist and gid in self.config.trigger.group_blacklist:
@@ -99,16 +102,13 @@ class BridgeGateway:
             if self.config.trigger.group_whitelist and gid not in self.config.trigger.group_whitelist:
                 return False
 
-            # Require @bot in group
             if self.config.trigger.require_at_in_group and not msg.is_at_bot:
-                # Also allow explicit command prefix
                 prefix = self.config.trigger.command_prefix
                 if prefix and msg.plain_text.startswith(prefix):
                     return True
                 return False
             return True
         else:
-            # Private chat
             return self.config.trigger.reply_private
 
     async def _handle_inbound(self, msg: InboundMessage) -> None:
@@ -162,15 +162,12 @@ class BridgeGateway:
             logger.error(f"Antigravity driver error: {e}")
             raw_response = f"抱歉，处理您的消息时遇到错误：{e}"
 
-        # Convert Markdown to QQ plain text and split into safe chunks
         clean_response = md_to_plain(raw_response)
         chunks = split_for_qq(clean_response, max_length=self.config.max_chunk_length)
 
-        # Record into history
         session.add_turn("user", msg.sender_display_name, text)
         session.add_turn("assistant", active_role, clean_response)
 
-        # Send response chunks back to QQ
         for chunk in chunks:
             await self._send_reply(msg, chunk)
             if len(chunks) > 1:
@@ -211,7 +208,7 @@ class BridgeGateway:
             status_text = (
                 f"【Antigravity Bridge 运行状态】\n"
                 f"• 运行时间: {uptime // 3600}小时{(uptime % 3600) // 60}分{uptime % 60}秒\n"
-                f"• 接入模式: OneBot v11 ({self.config.onebot.mode})\n"
+                f"• 接入协议: {self.config.onebot.protocol.upper()} ({self.config.onebot.mode})\n"
                 f"• Antigravity 驱动: {self.driver.mode} ({self.config.antigravity.model_name})\n"
                 f"• 当前会话: {msg.session_id} (角色: {cur})"
             )
@@ -221,27 +218,26 @@ class BridgeGateway:
         return False
 
     async def _send_reply(self, original_msg: InboundMessage, text: str) -> None:
-        """Send message back to OneBot endpoint."""
+        """Send message back to OneBot or Milky endpoint."""
         if not text:
             return
+
+        is_milky = (self.config.onebot.protocol == "milky")
+
         if original_msg.is_group:
-            params = {
-                "group_id": int(original_msg.group_id),
-                "message": text,
-            }
-            try:
-                await self.transport.call_action("send_group_msg", params)
-            except Exception as e:
-                logger.error(f"Failed to send group message: {e}")
+            action = "send_group_msg"
+            params = {"group_id": int(original_msg.group_id), "message": text}
         else:
-            params = {
-                "user_id": int(original_msg.user_id),
-                "message": text,
-            }
-            try:
-                await self.transport.call_action("send_private_msg", params)
-            except Exception as e:
-                logger.error(f"Failed to send private message: {e}")
+            action = "send_private_msg"
+            params = {"user_id": int(original_msg.user_id), "message": text}
+
+        if is_milky:
+            action, params = onebot_to_milky_api(action, params)
+
+        try:
+            await self.transport.call_action(action, params)
+        except Exception as e:
+            logger.error(f"Failed to send reply via {action}: {e}")
 
     async def _fetch_forward_summary(self, forward_id: str) -> str:
         """Call get_forward_msg and format into text."""

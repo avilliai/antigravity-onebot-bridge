@@ -1,14 +1,18 @@
 # -*- coding: utf-8 -*-
 """WebSocket Client & Server for OneBot v11 / Milky Protocol.
 
-Supports both Forward WebSocket (client connects to OneBot endpoint)
-and Reverse WebSocket (server listens for OneBot client connections).
-Implements asynchronous action calling with unique echo tracking.
+Supports:
+- Forward WebSocket (connects to OneBot / Milky event WS)
+- Reverse WebSocket (server listens for OneBot client connections)
+- WebSocket action calling with unique echo tracking
+- HTTP REST API calling fallback (for Milky Protocol 1.3 / OneBot HTTP endpoints)
 """
 
 import asyncio
 import json
 import logging
+import urllib.request
+import urllib.error
 import uuid
 from typing import Any, Callable, Coroutine, Dict, Optional, Set
 import websockets
@@ -17,12 +21,13 @@ logger = logging.getLogger("agy_onebot.ws")
 
 
 class OneBotWebSocketTransport:
-    """Handles WebSocket transport for OneBot v11 / Milky."""
+    """Handles WebSocket transport and HTTP API calling for OneBot v11 & Milky."""
 
     def __init__(
         self,
         mode: str = "forward",  # "forward" or "reverse"
         url: str = "ws://127.0.0.1:3001",
+        api_url: str = "http://127.0.0.1:3000",
         host: str = "0.0.0.0",
         port: int = 8080,
         access_token: Optional[str] = None,
@@ -30,6 +35,7 @@ class OneBotWebSocketTransport:
     ):
         self.mode = mode.lower()
         self.url = url
+        self.api_url = api_url.rstrip("/")
         self.host = host
         self.port = port
         self.access_token = access_token
@@ -64,16 +70,16 @@ class OneBotWebSocketTransport:
 
     async def _run_reverse_server(self) -> None:
         """Run reverse WebSocket server listening for OneBot clients."""
-        logger.info(f"Starting OneBot Reverse WebSocket server on {self.host}:{self.port}")
+        logger.info(f"Starting Reverse WebSocket server on {self.host}:{self.port}")
 
         async def _handler(websocket):
-            logger.info(f"OneBot client connected: {websocket.remote_address}")
+            logger.info(f"Client connected: {websocket.remote_address}")
             self._active_connections.add(websocket)
             try:
                 async for message in websocket:
                     await self._on_raw_message(message, websocket)
             except websockets.exceptions.ConnectionClosed:
-                logger.warning(f"OneBot client disconnected: {websocket.remote_address}")
+                logger.warning(f"Client disconnected: {websocket.remote_address}")
             finally:
                 self._active_connections.discard(websocket)
 
@@ -94,16 +100,15 @@ class OneBotWebSocketTransport:
         retry_delay = 2.0
         while self._running:
             try:
-                logger.info(f"Connecting to OneBot WebSocket at {self.url}...")
-                # Note: websockets version compatibility for headers
+                logger.info(f"Connecting to WebSocket at {self.url}...")
                 kwargs = {}
                 if headers:
                     kwargs["additional_headers"] = headers
 
                 async with websockets.connect(self.url, **kwargs) as ws:
-                    logger.info("Successfully connected to OneBot WebSocket.")
+                    logger.info("Successfully connected to WebSocket.")
                     self._active_connections.add(ws)
-                    retry_delay = 2.0  # reset backoff
+                    retry_delay = 2.0
 
                     async for message in ws:
                         await self._on_raw_message(message, ws)
@@ -137,28 +142,53 @@ class OneBotWebSocketTransport:
             asyncio.create_task(self._event_handler(payload))
 
     async def call_action(self, action: str, params: Optional[Dict[str, Any]] = None, timeout: float = 20.0) -> Dict[str, Any]:
-        """Invoke a OneBot / Milky action and await the response."""
-        if not self._active_connections:
-            raise RuntimeError("No active OneBot WebSocket connection available.")
+        """Invoke action via active WebSocket connection, falling back to HTTP API if no WS available."""
+        if self._active_connections:
+            echo_id = f"agy_{uuid.uuid4().hex[:12]}"
+            req = {
+                "action": action,
+                "params": params or {},
+                "echo": echo_id,
+            }
 
-        echo_id = f"agy_{uuid.uuid4().hex[:12]}"
-        req = {
-            "action": action,
-            "params": params or {},
-            "echo": echo_id,
-        }
+            loop = asyncio.get_running_loop()
+            fut = loop.create_future()
+            self._pending_actions[echo_id] = fut
+
+            ws = next(iter(self._active_connections))
+            try:
+                await ws.send(json.dumps(req, ensure_ascii=False))
+                res = await asyncio.wait_for(fut, timeout=timeout)
+                return res
+            except (asyncio.TimeoutError, Exception) as e:
+                self._pending_actions.pop(echo_id, None)
+                logger.debug(f"WS call_action '{action}' not answered ({e}). Trying HTTP API...")
+
+        # Fallback to HTTP REST API
+        return await self.call_http_api(action, params, timeout=timeout)
+
+    async def call_http_api(self, action: str, params: Optional[Dict[str, Any]] = None, timeout: float = 15.0) -> Dict[str, Any]:
+        """Invoke HTTP REST API endpoint (supports both OneBot and Milky)."""
+        api_root = self.api_url
+        url = f"{api_root}/{action}"
+        body = json.dumps(params or {}, ensure_ascii=False).encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+        if self.access_token:
+            headers["Authorization"] = f"Bearer {self.access_token}"
+
+        req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+
+        def _do_post():
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    return json.loads(resp.read().decode("utf-8"))
+            except urllib.error.HTTPError as he:
+                err_text = he.read().decode("utf-8", errors="replace")
+                logger.warning(f"HTTP API [{action}] error {he.code}: {err_text}")
+                return {"status": "failed", "retcode": he.code, "msg": err_text}
+            except Exception as ex:
+                logger.warning(f"HTTP API [{action}] request failed: {ex}")
+                return {"status": "failed", "retcode": -1, "msg": str(ex)}
 
         loop = asyncio.get_running_loop()
-        fut = loop.create_future()
-        self._pending_actions[echo_id] = fut
-
-        # Broadcast or send to first active connection
-        ws = next(iter(self._active_connections))
-        await ws.send(json.dumps(req, ensure_ascii=False))
-
-        try:
-            res = await asyncio.wait_for(fut, timeout=timeout)
-            return res
-        except asyncio.TimeoutError:
-            self._pending_actions.pop(echo_id, None)
-            raise TimeoutError(f"Action '{action}' timed out after {timeout}s")
+        return await loop.run_in_executor(None, _do_post)

@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """OneBot v11 & Milky Protocol Event Parser.
 
-Deserializes WebSocket events and normalizes message segments (Text, At, Image,
+Deserializes WebSocket events and normalizes message segments (Text, At/Mention, Image,
 Reply, Forward, Record, Face) into structured Python objects.
+Seamlessly auto-detects both standard OneBot v11 and Milky 1.3 protocol events.
 """
 
 from dataclasses import dataclass, field
@@ -65,6 +66,11 @@ def parse_onebot_event(raw_event: Dict[str, Any], bot_qq: Optional[str] = None) 
     """Parse raw JSON event dictionary from OneBot v11 or Milky into an InboundMessage."""
     if not isinstance(raw_event, dict):
         return None
+
+    # Check for Milky Protocol 1.3 event structure first
+    from .milky_protocol import is_milky_event, parse_milky_event
+    if is_milky_event(raw_event):
+        return parse_milky_event(raw_event, bot_qq=bot_qq)
 
     post_type = raw_event.get("post_type", "")
     if post_type != "message":
