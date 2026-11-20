@@ -1,0 +1,22 @@
+{
+  "name": "antigravity-onebot-bridge",
+  "version": "1.0.0",
+  "description": "Antigravity plugin and gateway bridging Google Antigravity agents with OneBot v11 and Milky protocol endpoints.",
+  "author": {
+    "name": "avilliai",
+    "email": "1840094972@qq.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/avilliai/antigravity-onebot-bridge.git"
+  },
+  "keywords": [
+    "antigravity",
+    "onebot",
+    "onebot-v11",
+    "milky",
+    "qq-bot",
+    "roleplay",
+    "mcp"
+  ]
+}

@@ -1,0 +1,51 @@
+# Antigravity OneBot & Milky Bridge Configuration
+
+onebot:
+  # Connection mode: "forward" (bot connects to OneBot WS) or "reverse" (OneBot connects here)
+  mode: "forward"
+  
+  # Forward WS endpoint (NapCat / LLOneBot / Lagrange / Milky)
+  ws_url: "ws://127.0.0.1:3001"
+  
+  # Reverse WS listening address (used when mode is "reverse")
+  reverse_host: "0.0.0.0"
+  reverse_port: 8080
+  
+  # Access token (leave empty if not configured in OneBot)
+  access_token: ""
+  
+  # Bot QQ number (used to detect @bot mentions in groups)
+  bot_qq: "12345678"
+
+antigravity:
+  # Driver mode: "auto" (detects SDK/CLI/API), "sdk", "cli", or "api"
+  mode: "auto"
+  cli_command: "agy"
+  model_name: "gemini-2.5-pro"
+  api_key: ""
+  api_base_url: ""
+  timeout: 120.0
+
+roleplay:
+  # Default persona card name (from roles/<name>.md)
+  default_role: "shiro"
+  roles_dir: ""
+  enable_group_persona: true
+
+trigger:
+  # Automatically reply to private messages
+  reply_private: true
+  
+  # In group chats, require @bot mention or prefix
+  require_at_in_group: true
+  command_prefix: "/"
+  
+  # Optional group filters (empty list disables filtering)
+  group_whitelist: []
+  group_blacklist: []
+
+# Maximum characters per message before splitting (QQ safe limit)
+max_chunk_length: 4000
+
+# Conversation history memory window
+max_history_turns: 15

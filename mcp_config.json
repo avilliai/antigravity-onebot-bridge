@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "antigravity-onebot": {
+      "command": "python",
+      "args": ["-m", "agy_onebot.mcp_server"],
+      "env": {
+        "ONEBOT_HTTP_URL": "http://127.0.0.1:3000",
+        "ONEBOT_ACCESS_TOKEN": ""
+      }
+    }
+  }
+}
