@@ -56,7 +56,7 @@ class OneBotWebSocketTransport:
         if self.mode == "reverse":
             await self._run_reverse_server()
         else:
-            asyncio.create_task(self._run_forward_client())
+            await self._run_forward_client()
 
     async def stop(self) -> None:
         """Stop transport and disconnect."""
