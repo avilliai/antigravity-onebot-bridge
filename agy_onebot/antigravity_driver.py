@@ -3,8 +3,8 @@
 
 Provides unified execution bridges for Google Antigravity:
 1. Native Antigravity Python SDK (`google.antigravity.Agent`).
-2. Antigravity CLI subprocess (`agy`).
-3. Standard fallback LLM client (Gemini / OpenAI API compatible) for development & testing.
+2. Antigravity CLI subprocess (`agy` CLI, supporting non-interactive -p / --print).
+3. Direct API fallback (Gemini / Generative Language API compatible).
 """
 
 import asyncio
@@ -30,7 +30,7 @@ class AntigravityDriver:
 
     def __init__(
         self,
-        mode: str = "auto",  # "sdk", "cli", "api", "auto"
+        mode: str = "auto",  # "cli", "sdk", "api", "auto"
         cli_command: str = "agy",
         api_base_url: Optional[str] = None,
         api_key: Optional[str] = None,
@@ -44,10 +44,10 @@ class AntigravityDriver:
         self.timeout = timeout
 
         if mode == "auto":
-            if HAS_AGY_SDK:
-                self.mode = "sdk"
-            elif shutil.which(cli_command):
+            if shutil.which(cli_command):
                 self.mode = "cli"
+            elif HAS_AGY_SDK:
+                self.mode = "sdk"
             else:
                 self.mode = "api"
         else:
@@ -62,14 +62,60 @@ class AntigravityDriver:
         history: Optional[List[Dict[str, str]]] = None,
         image_bytes: Optional[bytes] = None,
         image_mime: Optional[str] = None,
+        conversation_id: Optional[str] = None,
     ) -> str:
         """Execute chat turn and return the agent's textual response."""
-        if self.mode == "sdk" and HAS_AGY_SDK:
+        if self.mode == "cli":
+            return await self._chat_via_cli(prompt, system_instructions, conversation_id)
+        elif self.mode == "sdk" and HAS_AGY_SDK:
             return await self._chat_via_sdk(prompt, system_instructions, history)
-        elif self.mode == "cli":
-            return await self._chat_via_cli(prompt, system_instructions)
         else:
             return await self._chat_via_api(prompt, system_instructions, history, image_bytes, image_mime)
+
+    async def _chat_via_cli(
+        self,
+        prompt: str,
+        system_instructions: Optional[str],
+        conversation_id: Optional[str] = None,
+    ) -> str:
+        """Invoke Antigravity CLI (agy.exe) non-interactively via subprocess.
+
+        Uses:
+          agy -p <prompt> --dangerously-skip-permissions [--conversation <id>]
+        """
+        full_prompt = prompt
+        if system_instructions:
+            full_prompt = f"[System Instructions: {system_instructions}]\n\n{prompt}"
+
+        cmd = [
+            self.cli_command,
+            "-p", full_prompt,
+            "--dangerously-skip-permissions",
+            "--output-format", "text"
+        ]
+        if conversation_id:
+            cmd.extend(["--conversation", conversation_id])
+
+        try:
+            logger.info(f"Executing agy CLI command: {self.cli_command} -p ...")
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=self.timeout)
+            out_str = stdout.decode("utf-8", errors="replace").strip()
+            if proc.returncode != 0:
+                err_str = stderr.decode("utf-8", errors="replace").strip()
+                logger.warning(f"CLI returned code {proc.returncode}: {err_str}")
+                if not out_str:
+                    # Fallback to direct API if CLI fails or lacks login session
+                    logger.info("Falling back to API mode...")
+                    return await self._chat_via_api(prompt, system_instructions, None)
+            return out_str
+        except Exception as e:
+            logger.error(f"CLI execution failed: {e}. Falling back to API mode...")
+            return await self._chat_via_api(prompt, system_instructions, None)
 
     async def _chat_via_sdk(
         self,
@@ -90,31 +136,8 @@ class AntigravityDriver:
                     chunks.append(token)
                 return "".join(chunks).strip()
         except Exception as e:
-            logger.error(f"SDK execution failed: {e}. Falling back to CLI/API...")
-            return await self._chat_via_cli(prompt, system_instructions)
-
-    async def _chat_via_cli(self, prompt: str, system_instructions: Optional[str]) -> str:
-        """Call Antigravity via agy CLI."""
-        cmd = [self.cli_command, "--print", prompt]
-        if system_instructions:
-            # Pass instructions via temporary environment or args if supported
-            pass
-
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=self.timeout)
-            out_str = stdout.decode("utf-8", errors="replace").strip()
-            if proc.returncode != 0:
-                err_str = stderr.decode("utf-8", errors="replace").strip()
-                logger.warning(f"CLI returned non-zero ({proc.returncode}): {err_str}")
-            return out_str
-        except Exception as e:
-            logger.error(f"CLI execution failed: {e}")
-            return f"[Antigravity 执行错误: {e}]"
+            logger.error(f"SDK execution failed: {e}. Falling back to API...")
+            return await self._chat_via_api(prompt, system_instructions, history)
 
     async def _chat_via_api(
         self,
@@ -124,12 +147,11 @@ class AntigravityDriver:
         image_bytes: Optional[bytes] = None,
         image_mime: Optional[str] = None,
     ) -> str:
-        """Direct API fallback (Gemini / OpenAI compatible) using standard urllib or aiohttp."""
-        # Clean fallback mock when keys are not configured yet, ensuring safe out-of-the-box testability
+        """Direct API fallback (Gemini / Generative Language REST API)."""
         if not self.api_key and not self.api_base_url:
             return (
-                f"【Antigravity 角色回应】已收到您的消息：\"{prompt[:50]}\"。\n"
-                f"（提示：检测到当前尚未配置 API Key 或启动本地 Antigravity 守护进程，这是测试模式自动回执。）"
+                f"【Antigravity 角色回应】已收到您的消息：\"{prompt[:60]}\"。\n"
+                f"（提示：检测到当前 agy 会话尚未登录或未配置 API Key，请先运行 agy 登录或在 config.yaml 中配置 api_key。）"
             )
 
         import urllib.request
